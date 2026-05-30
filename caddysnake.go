@@ -77,19 +77,20 @@ type AppServer interface {
 
 // CaddySnake module that communicates with a Python app
 type CaddySnake struct {
-	ModuleWsgi string `json:"module_wsgi,omitempty"`
-	ModuleAsgi string `json:"module_asgi,omitempty"`
-	ModuleEsgi string `json:"module_esgi,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
-	Lifespan   string `json:"lifespan,omitempty"`
-	WorkingDir string `json:"working_dir,omitempty"`
-	VenvPath   string `json:"venv_path,omitempty"`
-	Workers    string `json:"workers,omitempty"`
-	Autoreload string `json:"autoreload,omitempty"`
-	PythonPath string `json:"python_path,omitempty"`
-	logger     *zap.Logger
-	app        AppServer
-	cacheSrv   *cacheServer
+	ModuleWsgi      string   `json:"module_wsgi,omitempty"`
+	ModuleAsgi      string   `json:"module_asgi,omitempty"`
+	ModuleEsgi      string   `json:"module_esgi,omitempty"`
+	Runtime         string   `json:"runtime,omitempty"`
+	Lifespan        string   `json:"lifespan,omitempty"`
+	WorkingDir      string   `json:"working_dir,omitempty"`
+	VenvPath        string   `json:"venv_path,omitempty"`
+	Workers         string   `json:"workers,omitempty"`
+	Autoreload      string   `json:"autoreload,omitempty"`
+	AutoreloadPaths []string `json:"autoreload_paths,omitempty"`
+	PythonPath      string   `json:"python_path,omitempty"`
+	logger          *zap.Logger
+	app             AppServer
+	cacheSrv        *cacheServer
 }
 
 // effectivePythonRuntime returns the runtime string passed to the Python worker.
@@ -174,6 +175,11 @@ func (f *CaddySnake) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					}
 				case "autoreload":
 					f.Autoreload = "on"
+				case "autoreload_paths":
+					f.AutoreloadPaths = d.RemainingArgs()
+					if len(f.AutoreloadPaths) == 0 {
+						return d.Errf("expected at least one path for autoreload_paths")
+					}
 				case "python_path":
 					if !d.Args(&f.PythonPath) {
 						return d.Errf("expected exactly one argument for python_path")
