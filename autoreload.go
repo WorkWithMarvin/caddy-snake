@@ -1,6 +1,7 @@
 package caddysnake
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,7 +56,7 @@ func handleNewDirEvent(event fsnotify.Event, watcher *fsnotify.Watcher) {
 }
 
 // AutoreloadableApp wraps an AppServer to support hot-reloading when Python
-// files in the working directory change. It watches for .py file modifications
+// files change in the watched directories. It watches for .py file modifications
 // and reloads the app after a debounce period to group rapid changes.
 type AutoreloadableApp struct {
 	mu                   sync.RWMutex
@@ -64,22 +65,26 @@ type AutoreloadableApp struct {
 	watcher              *fsnotify.Watcher
 	stopCh               chan struct{}
 	logger               *zap.Logger
-	workingDir           string
+	watchDirs            []string
 	exitOnReloadFailure   func(code int) // if set, process exits on reload failure instead of serving 500
 }
 
 // NewAutoreloadableApp creates an AutoreloadableApp that wraps the given app and
-// starts a filesystem watcher on the working directory. When any .py file changes,
-// the app is reloaded after a 500ms debounce window.
+// starts a filesystem watcher on the specified directories. When any .py file
+// changes, the app is reloaded after a 500ms debounce window.
 // If exitOnReloadFailure is non-nil, it is called with code 1 when a reload fails
 // (e.g. app deleted), so the process can terminate and stop serving requests.
 func NewAutoreloadableApp(
 	app AppServer,
-	workingDir string,
+	watchDirs []string,
 	factory func() (AppServer, error),
 	logger *zap.Logger,
 	exitOnReloadFailure func(code int),
 ) (*AutoreloadableApp, error) {
+	if len(watchDirs) == 0 {
+		return nil, errors.New("autoreload: at least one watch directory required")
+	}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -91,15 +96,21 @@ func NewAutoreloadableApp(
 		watcher:             watcher,
 		stopCh:              make(chan struct{}),
 		logger:              logger,
-		workingDir:          workingDir,
+		watchDirs:           watchDirs,
 		exitOnReloadFailure: exitOnReloadFailure,
 	}
 
-	watchDirRecursive(watcher, workingDir, logger)
+	for _, dir := range watchDirs {
+		watchDirRecursive(watcher, dir, logger)
+	}
 
 	go a.watch()
 
-	logger.Info("autoreload enabled", zap.String("working_dir", workingDir))
+	if len(watchDirs) == 1 {
+		logger.Info("autoreload enabled", zap.String("working_dir", watchDirs[0]))
+	} else {
+		logger.Info("autoreload enabled", zap.Strings("watch_dirs", watchDirs))
+	}
 
 	return a, nil
 }
