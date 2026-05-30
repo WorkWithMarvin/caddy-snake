@@ -115,6 +115,7 @@ func TestDynamicAppResolveWithoutReplacer(t *testing.T) {
 		zap.NewNop(),
 		false,
 		nil,
+		nil,
 	)
 
 	r := &http.Request{}
@@ -148,6 +149,7 @@ func TestDynamicAppGetOrCreate(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 
@@ -190,6 +192,7 @@ func TestDynamicAppCleanup(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 
@@ -903,6 +906,7 @@ func TestDynamicAppGetOrCreate_FactoryError(t *testing.T) {
 		zap.NewNop(),
 		false,
 		nil,
+		nil,
 	)
 
 	app, err := d.getOrCreateApp("key1", "main:app", "/home/test", "")
@@ -928,6 +932,7 @@ func TestDynamicAppCleanup_WithErrors(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 
@@ -960,6 +965,7 @@ func TestDynamicAppHandleRequest(t *testing.T) {
 		zap.NewNop(),
 		false,
 		nil,
+		nil,
 	)
 
 	w := &mockResponseWriter{headers: make(http.Header)}
@@ -986,6 +992,7 @@ func TestDynamicAppHandleRequest_FactoryError(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 
@@ -1014,6 +1021,7 @@ func TestDynamicAppHandleRequest_AutoreloadFactoryError_TerminatesWhenExitFuncSe
 		},
 		zap.NewNop(),
 		true, // autoreload
+		nil,
 		exitFunc,
 	)
 	defer d.Cleanup()
@@ -1041,6 +1049,7 @@ func TestDynamicAppResolveWithReplacer(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 
@@ -1073,6 +1082,7 @@ func TestDynamicAppResolveMultiplePlaceholders(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 
@@ -1112,6 +1122,7 @@ func TestDynamicAppConcurrentAccess(t *testing.T) {
 		zap.NewNop(),
 		false,
 		nil,
+		nil,
 	)
 
 	const goroutines = 50
@@ -1150,6 +1161,7 @@ func TestDynamicAppConcurrentDifferentKeys(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 
@@ -1360,6 +1372,7 @@ func TestDynamicAppGetOrCreate_DoubleCheckPath(t *testing.T) {
 		zap.NewNop(),
 		false,
 		nil,
+		nil,
 	)
 
 	const goroutines = 50
@@ -1396,11 +1409,152 @@ func TestDynamicAppCleanup_EmptyApps(t *testing.T) {
 		zap.NewNop(),
 		false,
 		nil,
+		nil,
 	)
 
 	err := d.Cleanup()
 	if err != nil {
 		t.Errorf("expected nil error for empty cleanup, got: %v", err)
+	}
+}
+
+// ====================== DynamicApp AutoreloadPaths Tests ======================
+
+func TestDynamicApp_AutoreloadPaths_NewDynamicApp(t *testing.T) {
+	tempDir := t.TempDir()
+
+	d, err := NewDynamicApp("main:app", "/home/test", "",
+		func(module, dir, venv string) (AppServer, error) {
+			return &mockAppServer{}, nil
+		},
+		zap.NewNop(),
+		true,                  // autoreload
+		[]string{tempDir},     // autoreloadPaths
+		nil,                   // exitOnReloadFailure
+	)
+	if err != nil {
+		t.Fatalf("NewDynamicApp: %v", err)
+	}
+	defer d.Cleanup()
+
+	d.mu.RLock()
+	keys, exists := d.dirToKeys[tempDir]
+	d.mu.RUnlock()
+	if !exists {
+		t.Fatal("expected autoreloadPaths dir to be in dirToKeys")
+	}
+	if keys != nil {
+		t.Errorf("expected nil keys for sentinel path (shared library dir), got %v", keys)
+	}
+}
+
+func TestDynamicApp_AutoreloadPaths_SentinelChangeEvictsAllApps(t *testing.T) {
+	sentinelDir := t.TempDir()
+	appDir := t.TempDir()
+
+	d, err := NewDynamicApp("main:app", appDir, "",
+		func(module, dir, venv string) (AppServer, error) {
+			return &mockAppServer{}, nil
+		},
+		zap.NewNop(),
+		true,                    // autoreload
+		[]string{sentinelDir},   // shared autoreloadPaths
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewDynamicApp: %v", err)
+	}
+	defer d.Cleanup()
+
+	// Create an app so there's something to evict
+	_, err = d.getOrCreateApp("key1", "main:app", appDir, "")
+	if err != nil {
+		t.Fatalf("getOrCreateApp: %v", err)
+	}
+
+	d.mu.RLock()
+	if len(d.apps) != 1 {
+		d.mu.RUnlock()
+		t.Fatalf("expected 1 app before sentinel change, got %d", len(d.apps))
+	}
+	d.mu.RUnlock()
+
+	// Write a .py file to the sentinel dir to trigger watcher
+	pyFile := filepath.Join(sentinelDir, "shared.py")
+	if err := os.WriteFile(pyFile, []byte("x = 1"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Wait for debounce (500ms) + processing
+	time.Sleep(1500 * time.Millisecond)
+
+	d.mu.RLock()
+	appCount := len(d.apps)
+	_, sentinelStillExists := d.dirToKeys[sentinelDir]
+	_, appDirExists := d.dirToKeys[appDir]
+	d.mu.RUnlock()
+
+	if appCount != 0 {
+		t.Errorf("expected all apps evicted after sentinel change, got %d app(s)", appCount)
+	}
+	if !sentinelStillExists {
+		t.Error("expected sentinel dir entry to remain after reloadAll")
+	}
+	if appDirExists {
+		t.Error("expected per-app dir entry to be removed after reloadAll")
+	}
+}
+
+func TestDynamicApp_AutoreloadPaths_NormalDirChangeStillReloadsDir(t *testing.T) {
+	appDir := t.TempDir()
+
+	d, err := NewDynamicApp("main:app", appDir, "",
+		func(module, dir, venv string) (AppServer, error) {
+			return &mockAppServer{}, nil
+		},
+		zap.NewNop(),
+		true,   // autoreload
+		nil,    // no autoreloadPaths
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewDynamicApp: %v", err)
+	}
+	defer d.Cleanup()
+
+	// Create an app for the normal working dir
+	_, err = d.getOrCreateApp("key1", "main:app", appDir, "")
+	if err != nil {
+		t.Fatalf("getOrCreateApp: %v", err)
+	}
+
+	d.mu.RLock()
+	appCount := len(d.apps)
+	d.mu.RUnlock()
+
+	if appCount != 1 {
+		t.Fatalf("expected 1 app before change, got %d", appCount)
+	}
+
+	// Write a .py file to the app dir to trigger normal reloadDir
+	pyFile := filepath.Join(appDir, "app.py")
+	if err := os.WriteFile(pyFile, []byte("x = 1"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Wait for debounce + processing
+	time.Sleep(1500 * time.Millisecond)
+
+	d.mu.RLock()
+	appCount = len(d.apps)
+	_, appDirExists := d.dirToKeys[appDir]
+	d.mu.RUnlock()
+
+	if appCount != 0 {
+		t.Errorf("expected app evicted after normal dir change, got %d app(s)", appCount)
+	}
+	if appDirExists {
+		t.Errorf("expected app dir entry removed after reloadDir, but it still exists")
 	}
 }
 
@@ -1717,6 +1871,7 @@ func TestDynamicAppResolveWithNilReplacer(t *testing.T) {
 		},
 		zap.NewNop(),
 		false,
+		nil,
 		nil,
 	)
 

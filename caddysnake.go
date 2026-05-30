@@ -336,7 +336,7 @@ func (f *CaddySnake) provisionDynamic(workers int, cacheAddr string) error {
 			return NewPythonWorkerGroup("wsgi", module, dir, venv, lifespan, rt, workers, pythonBin, cacheAddr)
 		}
 		var err error
-		f.app, err = NewDynamicApp(f.ModuleWsgi, f.WorkingDir, f.VenvPath, factory, f.logger, autoreload, nil)
+		f.app, err = NewDynamicApp(f.ModuleWsgi, f.WorkingDir, f.VenvPath, factory, f.logger, autoreload, f.AutoreloadPaths, nil)
 		if err != nil {
 			return err
 		}
@@ -356,7 +356,7 @@ func (f *CaddySnake) provisionDynamic(workers int, cacheAddr string) error {
 			return NewPythonWorkerGroup("asgi", module, dir, venv, lifespan, rt, workers, pythonBin, cacheAddr)
 		}
 		var err error
-		f.app, err = NewDynamicApp(f.ModuleAsgi, f.WorkingDir, f.VenvPath, factory, f.logger, autoreload, nil)
+		f.app, err = NewDynamicApp(f.ModuleAsgi, f.WorkingDir, f.VenvPath, factory, f.logger, autoreload, f.AutoreloadPaths, nil)
 		if err != nil {
 			return err
 		}
@@ -372,7 +372,7 @@ func (f *CaddySnake) provisionDynamic(workers int, cacheAddr string) error {
 			return NewPythonWorkerGroup("esgi", module, dir, venv, "", rt, workers, pythonBin, cacheAddr)
 		}
 		var err error
-		f.app, err = NewDynamicApp(f.ModuleEsgi, f.WorkingDir, f.VenvPath, factory, f.logger, autoreload, nil)
+		f.app, err = NewDynamicApp(f.ModuleEsgi, f.WorkingDir, f.VenvPath, factory, f.logger, autoreload, f.AutoreloadPaths, nil)
 		if err != nil {
 			return err
 		}
@@ -854,7 +854,7 @@ Ensure DNS A/AAAA records are correctly set up if using a public domain for secu
 			cmd.Flags().Bool("debug", false, "Enable debug logs")
 			cmd.Flags().Bool("access-logs", false, "Enable access logs")
 			cmd.Flags().Bool("autoreload", false, "Watch .py files and reload on changes")
-			cmd.Flags().StringSlice("autoreload-path", nil, "Additional paths to watch for .py changes (repeatable)")
+			cmd.Flags().StringSlice("autoreload-path", nil, "Paths to watch for .py changes (repeatable)")
 			cmd.Flags().String("lifespan", "off", "Enable ASGI lifespan support (ignored in WSGI mode)")
 			cmd.Flags().String("runtime", "", "Worker runtime (wsgi: sync|gevent; esgi: gevent only; asgi: native|uvloop); defaults: sync for WSGI, gevent for ESGI, uvloop for ASGI")
 			cmd.RunE = caddycmd.WrapCommandFuncForCobra(pythonServer)

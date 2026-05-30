@@ -15,7 +15,7 @@ import (
 // watchDirRecursive adds all directories under root to the fsnotify watcher.
 // It is used by both AutoreloadableApp and DynamicApp.
 func watchDirRecursive(watcher *fsnotify.Watcher, root string, logger *zap.Logger) {
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -30,6 +30,12 @@ func watchDirRecursive(watcher *fsnotify.Watcher, root string, logger *zap.Logge
 		}
 		return nil
 	})
+	if err != nil {
+		logger.Warn("autoreload: failed to walk watch directory",
+			zap.String("root", root),
+			zap.Error(err),
+		)
+	}
 }
 
 // isPythonFileEvent returns true if the event is a write/create/remove/rename

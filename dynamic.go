@@ -67,6 +67,7 @@ type DynamicApp struct {
 
 	// Autoreload fields
 	autoreload          bool
+	autoreloadPaths     []string
 	watcher             *fsnotify.Watcher
 	dirToKeys           map[string][]string // abs working dir -> cache keys that use it
 	stopCh              chan struct{}
@@ -78,7 +79,7 @@ type DynamicApp struct {
 // Python app instances via the supplied factory function.
 // When autoreload is true, if exitOnReloadFailure is non-nil it is called with
 // code 1 when app creation fails (e.g. app deleted), so the process can terminate.
-func NewDynamicApp(modulePattern, workingDir, venvPath string, factory appFactory, logger *zap.Logger, autoreload bool, exitOnReloadFailure func(code int)) (*DynamicApp, error) {
+func NewDynamicApp(modulePattern, workingDir, venvPath string, factory appFactory, logger *zap.Logger, autoreload bool, autoreloadPaths []string, exitOnReloadFailure func(code int)) (*DynamicApp, error) {
 	d := &DynamicApp{
 		apps:                 make(map[string]AppServer),
 		modulePattern:        modulePattern,
@@ -87,6 +88,7 @@ func NewDynamicApp(modulePattern, workingDir, venvPath string, factory appFactor
 		factory:              factory,
 		logger:               logger,
 		autoreload:           autoreload,
+		autoreloadPaths:      autoreloadPaths,
 		exitOnReloadFailure:  exitOnReloadFailure,
 	}
 
@@ -98,6 +100,21 @@ func NewDynamicApp(modulePattern, workingDir, venvPath string, factory appFactor
 		d.watcher = watcher
 		d.dirToKeys = make(map[string][]string)
 		d.stopCh = make(chan struct{})
+		// Set up sentinel paths BEFORE starting watcher goroutine to avoid race.
+		for _, path := range autoreloadPaths {
+			absPath, absErr := filepath.Abs(path)
+			if absErr != nil {
+				logger.Warn("autoreload: failed to resolve sentinel path",
+					zap.String("path", path),
+					zap.Error(absErr),
+				)
+				continue
+			}
+			if _, exists := d.dirToKeys[absPath]; !exists {
+				d.dirToKeys[absPath] = nil
+				watchDirRecursive(watcher, absPath, logger)
+			}
+		}
 		go d.watchForChanges()
 		logger.Info("autoreload enabled for dynamic app")
 	}
@@ -174,7 +191,20 @@ func (d *DynamicApp) startWatchingDir(dir, key string) {
 		return
 	}
 
+	// Sentinel path (empty key) — watch but don't associate with any app.
+	// Changes in sentinel paths trigger full eviction via reloadAll().
+	if key == "" {
+		if _, exists := d.dirToKeys[absDir]; !exists {
+			d.dirToKeys[absDir] = nil
+			watchDirRecursive(d.watcher, absDir, d.logger)
+		}
+		return
+	}
+
 	if keys, ok := d.dirToKeys[absDir]; ok {
+		if keys == nil {
+			return // sentinel path; don't track individual apps here
+		}
 		for _, k := range keys {
 			if k == key {
 				return
@@ -212,11 +242,15 @@ func (d *DynamicApp) watchForChanges() {
 			)
 
 			d.mu.RLock()
-			for absDir := range d.dirToKeys {
+			for absDir, keys := range d.dirToKeys {
 				if strings.HasPrefix(event.Name, absDir+string(os.PathSeparator)) ||
 					strings.HasPrefix(event.Name, absDir) {
 					pendingMu.Lock()
-					pendingDirs[absDir] = true
+					if keys == nil {
+						pendingDirs["__shared__"] = true
+					} else {
+						pendingDirs[absDir] = true
+					}
 					pendingMu.Unlock()
 				}
 			}
@@ -227,12 +261,25 @@ func (d *DynamicApp) watchForChanges() {
 			}
 			debounceTimer = time.AfterFunc(debounceDuration, func() {
 				pendingMu.Lock()
+				var sharedTriggered bool
+				for dir := range pendingDirs {
+					if dir == "__shared__" {
+						sharedTriggered = true
+					}
+				}
 				dirs := make([]string, 0, len(pendingDirs))
 				for dir := range pendingDirs {
-					dirs = append(dirs, dir)
+					if dir != "__shared__" {
+						dirs = append(dirs, dir)
+					}
 				}
 				pendingDirs = make(map[string]bool)
 				pendingMu.Unlock()
+
+				if sharedTriggered {
+					d.reloadAll()
+					return
+				}
 
 				for _, dir := range dirs {
 					d.reloadDir(dir)
@@ -281,6 +328,43 @@ func (d *DynamicApp) reloadDir(absDir string) {
 
 	d.logger.Info("dynamic python apps evicted, will reimport on next request",
 		zap.String("working_dir", absDir),
+		zap.Int("apps_evicted", len(oldApps)),
+	)
+
+	if len(oldApps) > 0 {
+		go func() {
+			time.Sleep(10 * time.Second)
+			for _, app := range oldApps {
+				if err := app.Cleanup(); err != nil {
+					d.logger.Error("failed to cleanup old dynamic app",
+						zap.Error(err),
+					)
+				}
+			}
+		}()
+	}
+}
+
+// reloadAll evicts all cached apps. Used when a shared autoreload_paths
+// directory changes — any app could be affected.
+func (d *DynamicApp) reloadAll() {
+	d.logger.Info("reloading all dynamic python apps due to shared path change")
+
+	d.mu.Lock()
+	oldApps := make([]AppServer, 0, len(d.apps))
+	for _, app := range d.apps {
+		oldApps = append(oldApps, app)
+	}
+	d.apps = make(map[string]AppServer)
+	// Remove per-app dir entries but keep shared (nil-key) entries
+	for absDir, keys := range d.dirToKeys {
+		if keys != nil {
+			delete(d.dirToKeys, absDir)
+		}
+	}
+	d.mu.Unlock()
+
+	d.logger.Info("all dynamic python apps evicted, will reimport on next request",
 		zap.Int("apps_evicted", len(oldApps)),
 	)
 
