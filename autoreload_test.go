@@ -24,7 +24,7 @@ func TestAutoreloadableApp_HandleRequest(t *testing.T) {
 	}
 
 	tempDir := t.TempDir()
-	a, err := NewAutoreloadableApp(mockApp, tempDir, func() (AppServer, error) { return mockApp, nil }, zap.NewNop(), nil)
+	a, err := NewAutoreloadableApp(mockApp, []string{tempDir}, func() (AppServer, error) { return mockApp, nil }, zap.NewNop(), nil)
 	if err != nil {
 		t.Fatalf("NewAutoreloadableApp: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestAutoreloadableApp_Cleanup(t *testing.T) {
 	mockApp := &mockAppServer{onCleanup: func() { cleaned = true }}
 
 	tempDir := t.TempDir()
-	a, err := NewAutoreloadableApp(mockApp, tempDir, func() (AppServer, error) { return mockApp, nil }, zap.NewNop(), nil)
+	a, err := NewAutoreloadableApp(mockApp, []string{tempDir}, func() (AppServer, error) { return mockApp, nil }, zap.NewNop(), nil)
 	if err != nil {
 		t.Fatalf("NewAutoreloadableApp: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestAutoreloadableApp_ReloadFailure_TerminatesWhenExitFuncSet(t *testing.T)
 
 	mockApp := &mockAppServer{}
 	reloadErr := errors.New("app deleted")
-	a, err := NewAutoreloadableApp(mockApp, t.TempDir(), func() (AppServer, error) {
+	a, err := NewAutoreloadableApp(mockApp, []string{t.TempDir()}, func() (AppServer, error) {
 		return nil, reloadErr
 	}, zap.NewNop(), exitFunc)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestErrorApp_Cleanup(t *testing.T) {
 func TestAutoreloadableApp_ReloadFailure_FallsBackToErrorApp(t *testing.T) {
 	mockApp := &mockAppServer{}
 	reloadErr := errors.New("syntax error")
-	a, err := NewAutoreloadableApp(mockApp, t.TempDir(), func() (AppServer, error) {
+	a, err := NewAutoreloadableApp(mockApp, []string{t.TempDir()}, func() (AppServer, error) {
 		return nil, reloadErr
 	}, zap.NewNop(), nil) // nil exitOnReloadFailure
 	if err != nil {
@@ -203,7 +203,7 @@ func TestAutoreloadableApp_ReloadRecovery(t *testing.T) {
 		},
 	}
 	failFirst := true
-	a, err := NewAutoreloadableApp(&mockAppServer{}, t.TempDir(), func() (AppServer, error) {
+	a, err := NewAutoreloadableApp(&mockAppServer{}, []string{t.TempDir()}, func() (AppServer, error) {
 		if failFirst {
 			failFirst = false
 			return nil, errors.New("temporary failure")
@@ -239,7 +239,7 @@ func TestAutoreloadableApp_FileChangeTriggersReload(t *testing.T) {
 	mockApp := &mockAppServer{}
 	tempDir := t.TempDir()
 
-	a, err := NewAutoreloadableApp(mockApp, tempDir, func() (AppServer, error) {
+	a, err := NewAutoreloadableApp(mockApp, []string{tempDir}, func() (AppServer, error) {
 		atomic.AddInt32(&reloadCount, 1)
 		select {
 		case reloadCalled <- struct{}{}:

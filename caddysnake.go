@@ -273,13 +273,24 @@ func (f *CaddySnake) Provision(ctx caddy.Context) error {
 	}
 
 	if f.Autoreload == "on" {
-		watchDir := f.WorkingDir
-		if watchDir == "" {
-			watchDir = "."
+		watchDirs := f.AutoreloadPaths
+		if len(watchDirs) == 0 {
+			// Fall back to working_dir (existing behavior)
+			watchDir := f.WorkingDir
+			if watchDir == "" {
+				watchDir = "."
+			}
+			watchDirs = []string{watchDir}
 		}
-		absDir, absErr := filepath.Abs(watchDir)
-		if absErr != nil {
-			return fmt.Errorf("autoreload: %w", absErr)
+
+		// Resolve each to absolute path
+		absDirs := make([]string, len(watchDirs))
+		for i, d := range watchDirs {
+			abs, absErr := filepath.Abs(d)
+			if absErr != nil {
+				return fmt.Errorf("autoreload: %w", absErr)
+			}
+			absDirs[i] = abs
 		}
 
 		var factory func() (AppServer, error)
@@ -301,7 +312,7 @@ func (f *CaddySnake) Provision(ctx caddy.Context) error {
 		}
 
 		// Keep Caddy running on reload errors; failed app serves 503 until recovery.
-		f.app, err = NewAutoreloadableApp(f.app, absDir, factory, f.logger, nil)
+		f.app, err = NewAutoreloadableApp(f.app, absDirs, factory, f.logger, nil)
 		if err != nil {
 			return fmt.Errorf("autoreload: %w", err)
 		}
