@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -263,5 +264,58 @@ func TestAutoreloadableApp_FileChangeTriggersReload(t *testing.T) {
 		// reload was triggered by file change
 	case <-time.After(5 * time.Second):
 		t.Fatal("expected reload to be triggered by .py file change")
+	}
+}
+
+func TestAutoreloadableApp_MultipleWatchDirs(t *testing.T) {
+	var mu sync.Mutex
+	var reloadCount int
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mockApp := &mockAppServer{}
+	a, err := NewAutoreloadableApp(mockApp, []string{dir1, dir2}, func() (AppServer, error) {
+		mu.Lock()
+		reloadCount++
+		mu.Unlock()
+		return mockApp, nil
+	}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewAutoreloadableApp: %v", err)
+	}
+	defer a.Cleanup()
+
+	// Write .py file in dir1
+	pyFile1 := filepath.Join(dir1, "mod1.py")
+	if err := os.WriteFile(pyFile1, []byte("x = 1"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Wait for reload
+	time.Sleep(800 * time.Millisecond)
+
+	mu.Lock()
+	countAfterDir1 := reloadCount
+	mu.Unlock()
+
+	if countAfterDir1 < 1 {
+		t.Fatal("expected at least 1 reload after writing .py in dir1")
+	}
+
+	// Write .py file in dir2
+	pyFile2 := filepath.Join(dir2, "mod2.py")
+	if err := os.WriteFile(pyFile2, []byte("y = 2"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Wait for reload
+	time.Sleep(800 * time.Millisecond)
+
+	mu.Lock()
+	countAfterDir2 := reloadCount
+	mu.Unlock()
+
+	if countAfterDir2 < countAfterDir1+1 {
+		t.Error("expected another reload after writing .py in dir2")
 	}
 }

@@ -300,6 +300,38 @@ func TestUnmarshalCaddyfile_BlockAllOptions(t *testing.T) {
 	}
 }
 
+func TestUnmarshalCaddyfile_AutoreloadPaths(t *testing.T) {
+	input := "python {\n\t\tmodule_wsgi main:app\n\t\tautoreload\n\t\tautoreload_paths /shared/lib /config/overrides\n\t}"
+	parser := caddyfile.NewTestDispenser(input)
+	var f CaddySnake
+	err := f.UnmarshalCaddyfile(parser)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile: %v", err)
+	}
+	if f.Autoreload != "on" {
+		t.Error("expected Autoreload to be 'on'")
+	}
+	if len(f.AutoreloadPaths) != 2 {
+		t.Fatalf("expected 2 autoreload_paths, got %d", len(f.AutoreloadPaths))
+	}
+	if f.AutoreloadPaths[0] != "/shared/lib" {
+		t.Errorf("expected first path /shared/lib, got %s", f.AutoreloadPaths[0])
+	}
+	if f.AutoreloadPaths[1] != "/config/overrides" {
+		t.Errorf("expected second path /config/overrides, got %s", f.AutoreloadPaths[1])
+	}
+}
+
+func TestUnmarshalCaddyfile_AutoreloadPaths_NoArgs(t *testing.T) {
+	input := "python {\n\t\tmodule_wsgi main:app\n\t\tautoreload_paths\n\t}"
+	parser := caddyfile.NewTestDispenser(input)
+	var f CaddySnake
+	err := f.UnmarshalCaddyfile(parser)
+	if err == nil {
+		t.Fatal("expected error for autoreload_paths without args")
+	}
+}
+
 func TestUnmarshalCaddyfile_BlockAsgiWithLifespan(t *testing.T) {
 	input := `python {
 		module_asgi main:app
