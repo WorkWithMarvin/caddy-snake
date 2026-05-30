@@ -40,6 +40,11 @@ import click
     is_flag=True,
     help="Watch .py files and reload on changes",
 )
+@click.option(
+    "--autoreload-path",
+    multiple=True,
+    help="Paths to watch for .py changes (repeatable)",
+)
 def main(
     server_type,
     domain,
@@ -51,6 +56,7 @@ def main(
     debug,
     access_logs,
     autoreload,
+    autoreload_path,
 ):
     """
     A Python WSGI or ASGI server designed for apps and frameworks.
@@ -90,6 +96,9 @@ def main(
         args.append("--access-logs")
     if autoreload:
         args.append("--autoreload")
+    if autoreload_path:
+        for p in autoreload_path:
+            args.extend(["--autoreload-path", p])
 
     # Execute the binary with the constructed arguments
     os.execv(binary_path, args)

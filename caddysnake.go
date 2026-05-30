@@ -854,6 +854,7 @@ Ensure DNS A/AAAA records are correctly set up if using a public domain for secu
 			cmd.Flags().Bool("debug", false, "Enable debug logs")
 			cmd.Flags().Bool("access-logs", false, "Enable access logs")
 			cmd.Flags().Bool("autoreload", false, "Watch .py files and reload on changes")
+			cmd.Flags().StringSlice("autoreload-path", nil, "Additional paths to watch for .py changes (repeatable)")
 			cmd.Flags().String("lifespan", "off", "Enable ASGI lifespan support (ignored in WSGI mode)")
 			cmd.Flags().String("runtime", "", "Worker runtime (wsgi: sync|gevent; esgi: gevent only; asgi: native|uvloop); defaults: sync for WSGI, gevent for ESGI, uvloop for ASGI")
 			cmd.RunE = caddycmd.WrapCommandFuncForCobra(pythonServer)
@@ -872,6 +873,10 @@ func pythonServer(fs caddycmd.Flags) (int, error) {
 	debug := fs.Bool("debug")
 	accessLogs := fs.Bool("access-logs")
 	autoreload := fs.Bool("autoreload")
+	autoreloadPaths, err := fs.GetStringSlice("autoreload-path")
+	if err != nil {
+		return caddy.ExitCodeFailedStartup, fmt.Errorf("invalid --autoreload-path flag: %v", err)
+	}
 	staticPath := fs.String("static-path")
 	staticRoute := fs.String("static-route")
 	serverType := fs.String("server-type")
@@ -926,6 +931,7 @@ func pythonServer(fs caddycmd.Flags) (int, error) {
 	if autoreload {
 		pythonHandler.Autoreload = "on"
 	}
+	pythonHandler.AutoreloadPaths = autoreloadPaths
 	pythonHandler.WorkingDir = workingDir
 	pythonHandler.Lifespan = lifespan
 	pythonHandler.Runtime = runtimeFlag

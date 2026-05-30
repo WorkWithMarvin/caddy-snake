@@ -23,7 +23,9 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
+	caddycmd "github.com/caddyserver/caddy/v2/cmd"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/spf13/pflag"
 	"go.uber.org/zap"
 )
 
@@ -1931,6 +1933,35 @@ func TestSetPythonWorkerOutboundHeaders_NoPriorXFFIPv6(t *testing.T) {
 	}
 	if outReq.Header.Get("X-Forwarded-Proto") != "https" {
 		t.Fatalf("X-Forwarded-Proto = %q", outReq.Header.Get("X-Forwarded-Proto"))
+	}
+}
+
+func TestCLI_AutoreloadPathFlagParsing(t *testing.T) {
+	flagSet := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	flagSet.StringSlice("autoreload-path", nil, "Additional paths to watch for .py changes (repeatable)")
+
+	err := flagSet.Parse([]string{
+		"--autoreload-path=/shared/lib",
+		"--autoreload-path=/config/overrides",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fs := caddycmd.Flags{FlagSet: flagSet}
+
+	paths, err := fs.GetStringSlice("autoreload-path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 autoreload-path values, got %d: %v", len(paths), paths)
+	}
+	if paths[0] != "/shared/lib" {
+		t.Errorf("expected first path /shared/lib, got %q", paths[0])
+	}
+	if paths[1] != "/config/overrides" {
+		t.Errorf("expected second path /config/overrides, got %q", paths[1])
 	}
 }
 
