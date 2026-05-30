@@ -43,6 +43,7 @@ python {
     venv <path>
     workers <count>
     autoreload
+    autoreload_paths <path...>
 }
 ```
 
@@ -130,7 +131,7 @@ python {
 This is especially important in monorepo setups, containerized environments, or when running Caddy as a system service.
 
 :::tip
-When using `autoreload`, the working directory is also the root directory watched for `.py` file changes.
+When using `autoreload` without `autoreload_paths`, the working directory is watched for `.py` file changes. Set `autoreload_paths` to watch specific directories instead.
 :::
 
 The `working_dir` directive also supports [Caddy placeholders](#dynamic-module-loading) for dynamic resolution at request time.
@@ -163,14 +164,33 @@ python {
 
 ### `autoreload`
 
-Watches the working directory for `.py` file changes and automatically reloads the Python app without restarting Caddy. Useful during development.
+Watches for `.py` file changes and automatically reloads the Python app without restarting Caddy. Useful during development.
+
+By default, watches the `working_dir` (or current directory). Use `autoreload_paths` to watch specific paths instead:
 
 ```caddyfile
 python {
     module_wsgi "main:app"
     autoreload
+    autoreload_paths /shared/lib /config/overrides
 }
 ```
+
+### `autoreload_paths`
+
+Specifies one or more directories to watch for `.py` file changes when `autoreload` is enabled. When set, these paths **replace** `working_dir` as the watched directories. If a path does not exist, a warning is logged.
+
+```caddyfile
+python {
+    module_wsgi "main:app"
+    autoreload
+    autoreload_paths /project/lib /project/plugins
+}
+```
+
+This is useful in monorepo setups where shared library code lives outside the app's `working_dir`, or when multiple apps in a dynamic setup all depend on a common codebase.
+
+In dynamic module mode (with Caddy placeholders), changes to `autoreload_paths` directories cause all cached apps to be evicted and reimported on the next request — since any app could import code from the shared path.
 
 **How it works:**
 - Uses filesystem notifications (via [fsnotify](https://github.com/fsnotify/fsnotify)) to watch for `.py` file changes (write, create, remove, rename)
@@ -218,6 +238,8 @@ When any of the configuration values (`module_wsgi`/`module_asgi`, `working_dir`
 ### Dynamic modules + autoreload
 
 Dynamic module loading works with `autoreload`. When enabled, each resolved working directory is independently watched for changes. When a `.py` file changes in a particular directory, only the apps associated with that directory are evicted from the cache and reimported on the next request.
+
+When `autoreload_paths` is set on a dynamic app, those paths are watched as **shared directories**. Changes in a shared path cause **all** cached apps to be evicted and reimported on the next request — since any app could import code from the shared location. Per-app working directories still use targeted eviction.
 
 ```caddyfile
 *.example.com:9080 {

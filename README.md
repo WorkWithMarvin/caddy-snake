@@ -71,6 +71,7 @@ This starts a server on port `9080` serving your app. See `./caddy python-server
 --lifespan on|off         Enable ASGI lifespan events (default: off)
 --runtime <name>           WSGI: sync|gevent; ESGI: gevent only; ASGI: native|uvloop (see docs)
 --autoreload              Watch .py files and reload on changes
+--autoreload-path <path>  Additional paths to watch for .py changes (repeatable)
 ```
 
 ### Option 2: Build from source
@@ -254,6 +255,7 @@ python {
     workers 4                           # Number of worker processes (default: CPU count)
     lifespan on|off                     # ASGI lifespan events (default: off)
     autoreload                          # Watch .py files and reload on changes
+    autoreload_paths path1 path2 ...     # Explicit paths to watch (overrides working_dir)
 }
 ```
 
@@ -315,16 +317,19 @@ Enables ASGI [lifespan events](https://asgi.readthedocs.io/en/latest/specs/lifes
 
 ### `autoreload`
 
-Watches the working directory for `.py` file changes and automatically reloads the Python app. Useful during development.
+Watches for `.py` file changes and automatically reloads the Python app. Useful during development.
 
-Changes are debounced (500ms) to handle rapid edits.
+By default, watches the `working_dir` (or current directory). To watch specific paths instead, use `autoreload_paths`:
 
 ```Caddyfile
 python {
     module_wsgi "main:app"
     autoreload
+    autoreload_paths /shared/lib /config/overrides
 }
 ```
+
+When `autoreload_paths` is set, those paths **replace** `working_dir` as the watched directories. Changes are debounced (500ms) to handle rapid edits.
 
 ---
 
@@ -423,6 +428,16 @@ Add the `autoreload` directive to your Caddyfile. This watches for `.py` file ch
 python {
     module_wsgi "main:app"
     autoreload
+}
+```
+
+To watch specific directories instead of `working_dir`, use `autoreload_paths`:
+
+```Caddyfile
+python {
+    module_wsgi "main:app"
+    autoreload
+    autoreload_paths /shared/lib /config
 }
 ```
 
