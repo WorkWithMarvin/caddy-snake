@@ -66,6 +66,7 @@ func handleNewDirEvent(event fsnotify.Event, watcher *fsnotify.Watcher) {
 // and reloads the app after a debounce period to group rapid changes.
 type AutoreloadableApp struct {
 	mu                   sync.RWMutex
+	reloadMu             sync.Mutex
 	app                  AppServer
 	factory              func() (AppServer, error)
 	watcher              *fsnotify.Watcher
@@ -164,6 +165,9 @@ func (a *AutoreloadableApp) watch() {
 // reload performs the actual app reload by stopping the old worker processes
 // and starting new ones via the factory function.
 func (a *AutoreloadableApp) reload() {
+	a.reloadMu.Lock()
+	defer a.reloadMu.Unlock()
+
 	a.logger.Info("reloading python app due to file changes")
 
 	// Create new app OUTSIDE lock to avoid blocking requests
@@ -187,19 +191,25 @@ func (a *AutoreloadableApp) reload() {
 
 	a.logger.Info("python app reloaded successfully")
 
-	// Cleanup old app OUTSIDE lock. The write lock above guarantees all
-	// in-flight requests using oldApp have completed before the swap.
-	if err := oldApp.Cleanup(); err != nil {
-		a.logger.Error("failed to cleanup old python app during reload", zap.Error(err))
-	}
+	// Defer cleanup to avoid killing workers that may still be serving
+	// in-flight requests (e.g. WebSocket connections) that read the old
+	// app pointer before the swap. This mirrors DynamicApp's pattern.
+	go func() {
+		time.Sleep(10 * time.Second)
+		if err := oldApp.Cleanup(); err != nil {
+			a.logger.Error("failed to cleanup old python app during reload", zap.Error(err))
+		}
+	}()
 }
 
-// HandleRequest forwards the request to the underlying app while holding a read
-// lock. This ensures the app isn't swapped mid-request.
+// HandleRequest resolves the current app pointer under a brief read lock, then
+// forwards the request without holding any lock. This prevents long-lived
+// connections (WebSocket, SSE) from blocking reload() or starving new readers.
 func (a *AutoreloadableApp) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.app.HandleRequest(w, r)
+	app := a.app
+	a.mu.RUnlock()
+	return app.HandleRequest(w, r)
 }
 
 // Cleanup stops the filesystem watcher and cleans up the underlying app.

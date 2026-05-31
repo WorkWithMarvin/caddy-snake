@@ -2152,6 +2152,41 @@ func TestCLI_AutoreloadPathFlagParsing(t *testing.T) {
 	}
 }
 
+func TestPythonWorkerTransportHasTimeout(t *testing.T) {
+	// Create a socket file so Start() doesn't panic on Socket.Name().
+	socket, err := os.CreateTemp("", "caddysnake-test-transport*.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketName := socket.Name()
+	socket.Close()
+	defer os.Remove(socketName)
+
+	w := &PythonWorker{
+		PythonBin:  "/nonexistent/python",
+		ScriptPath: "/nonexistent/script.py",
+		Interface:  "wsgi",
+		App:        "app",
+		Socket:     os.NewFile(0, socketName), // non-nil *os.File for Socket.Name()
+		DialNet:    "unix",
+		DialAddr:   socketName,
+	}
+	_ = w.Start() // expected to fail at exec, but Transport must be set before that
+	defer func() {
+		if w.Transport != nil {
+			w.Transport.CloseIdleConnections()
+		}
+	}()
+
+	if w.Transport == nil {
+		t.Fatal("Transport is nil — Start() should set Transport before launching process")
+	}
+	want := 60 * time.Second
+	if w.Transport.ResponseHeaderTimeout != want {
+		t.Errorf("ResponseHeaderTimeout = %v, want %v", w.Transport.ResponseHeaderTimeout, want)
+	}
+}
+
 func TestSetPythonWorkerOutboundHeaders_StripsSpoofedTrustedHeaders(t *testing.T) {
 	inReq := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	inReq.RemoteAddr = "192.0.2.1:80"

@@ -617,10 +617,11 @@ func (w *PythonWorker) Start() error {
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return w.dialWithRetry(ctx)
 		},
-		MaxIdleConns:        1024,
-		MaxIdleConnsPerHost: 256,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true,
+		MaxIdleConns:          1024,
+		MaxIdleConnsPerHost:   256,
+		IdleConnTimeout:       90 * time.Second,
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 60 * time.Second,
 	}
 	w.Proxy = &httputil.ReverseProxy{
 		Rewrite: func(req *httputil.ProxyRequest) {

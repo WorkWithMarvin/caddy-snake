@@ -3,6 +3,7 @@ package caddysnake
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -264,6 +265,176 @@ func TestAutoreloadableApp_FileChangeTriggersReload(t *testing.T) {
 		// reload was triggered by file change
 	case <-time.After(5 * time.Second):
 		t.Fatal("expected reload to be triggered by .py file change")
+	}
+}
+
+func TestConcurrentReloadSerializesFactoryCalls(t *testing.T) {
+	var concurrentFactory int64 // tracks current in-flight factory calls
+	var maxConcurrent int64     // tracks peak concurrency
+
+	mockApp := &mockAppServer{}
+
+	a, err := NewAutoreloadableApp(mockApp, []string{t.TempDir()}, func() (AppServer, error) {
+		cur := atomic.AddInt64(&concurrentFactory, 1)
+		// Track peak
+		for {
+			old := atomic.LoadInt64(&maxConcurrent)
+			if cur <= old || atomic.CompareAndSwapInt64(&maxConcurrent, old, cur) {
+				break
+			}
+		}
+		// Sleep to widen the window so concurrent calls overlap
+		time.Sleep(50 * time.Millisecond)
+		atomic.AddInt64(&concurrentFactory, -1)
+		return mockApp, nil
+	}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewAutoreloadableApp: %v", err)
+	}
+	defer a.Cleanup()
+
+	const N = 10
+	var wg sync.WaitGroup
+	wg.Add(N)
+
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			a.reload()
+		}()
+	}
+
+	wg.Wait()
+
+	peak := atomic.LoadInt64(&maxConcurrent)
+	if peak != 1 {
+		t.Errorf("expected max concurrent factory calls = 1 (serialized), got %d", peak)
+	}
+}
+
+func TestSlowRequestDoesNotBlockReloadOrNewRequests(t *testing.T) {
+	// Validates the atomic pointer swap: HandleRequest resolves the app pointer
+	// under a brief RLock, then calls HandleRequest outside the lock. This means
+	// a long-lived request (e.g. WebSocket) cannot block reload() or new requests.
+	//
+	// Pre-fix: slow HandleRequest held RLock for its entire duration → reload()
+	// blocked on Lock → all new readers starved → server-wide hang.
+	// Post-fix: RLock is released before the request body runs → no cascade.
+
+	handleStarted := make(chan struct{})
+
+	slowMock := &mockAppServer{
+		onHandleRequest: func(w http.ResponseWriter, r *http.Request) error {
+			close(handleStarted)
+			select {
+			case <-time.After(5 * time.Second):
+			case <-r.Context().Done():
+				return r.Context().Err()
+			}
+			return nil
+		},
+	}
+
+	var factoryCount atomic.Int32
+	fastMock := &mockAppServer{
+		onHandleRequest: func(w http.ResponseWriter, r *http.Request) error {
+			w.WriteHeader(200)
+			return nil
+		},
+	}
+
+	tempDir := t.TempDir()
+	a, err := NewAutoreloadableApp(slowMock, []string{tempDir}, func() (AppServer, error) {
+		factoryCount.Add(1)
+		return fastMock, nil
+	}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewAutoreloadableApp: %v", err)
+	}
+	defer a.Cleanup()
+
+	// Start a long-lived request (simulating WebSocket connection)
+	var slowWg sync.WaitGroup
+	slowWg.Add(1)
+	go func() {
+		defer slowWg.Done()
+		w := &mockResponseWriter{headers: make(http.Header)}
+		_ = a.HandleRequest(w, httptest.NewRequest("GET", "/slow", nil))
+	}()
+
+	select {
+	case <-handleStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow request did not start within 2s")
+	}
+
+	// Trigger reload — should NOT block (no RLock held by slow request)
+	reloadStart := time.Now()
+	a.reload()
+	reloadDuration := time.Since(reloadStart)
+
+	if reloadDuration >= 3*time.Second {
+		t.Errorf("reload blocked for %v (expected < 3s)", reloadDuration)
+	}
+
+	// Fast request should be served immediately by the new app
+	w := &mockResponseWriter{headers: make(http.Header)}
+	err = a.HandleRequest(w, httptest.NewRequest("GET", "/fast", nil))
+	if err != nil {
+		t.Errorf("fast request returned error: %v", err)
+	}
+	if w.statusCode != 200 {
+		t.Errorf("fast request status = %d, want 200", w.statusCode)
+	}
+
+	if got := factoryCount.Load(); got != 1 {
+		t.Errorf("expected factory called exactly once, got %d", got)
+	}
+
+	slowWg.Wait()
+}
+
+func TestReloadDefersOldAppCleanup(t *testing.T) {
+	// Validates that reload() defers old app cleanup to avoid killing workers
+	// that may still be serving in-flight requests (WebSocket, etc.).
+
+	cleanupCh := make(chan struct{})
+
+	initialApp := &mockAppServer{
+		onHandleRequest: func(w http.ResponseWriter, r *http.Request) error {
+			w.WriteHeader(200)
+			return nil
+		},
+		onCleanup: func() {
+			close(cleanupCh)
+		},
+	}
+
+	newApp := &mockAppServer{
+		onHandleRequest: func(w http.ResponseWriter, r *http.Request) error {
+			w.WriteHeader(200)
+			return nil
+		},
+	}
+
+	tempDir := t.TempDir()
+	a, err := NewAutoreloadableApp(initialApp, []string{tempDir}, func() (AppServer, error) {
+		return newApp, nil
+	}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewAutoreloadableApp: %v", err)
+	}
+	defer a.Cleanup()
+
+	// Reload — should NOT call Cleanup() on initialApp immediately
+	a.reload()
+
+	// Verify cleanup was NOT called within the first 3s
+	select {
+	case <-cleanupCh:
+		t.Fatal("old app Cleanup called before grace period")
+	case <-time.After(3 * time.Second):
+		// Expected — cleanup is deferred
 	}
 }
 
